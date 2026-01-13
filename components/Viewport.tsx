@@ -121,7 +121,12 @@ const Viewport: React.FC<ViewportProps> = ({
           ref={fileInputRef} 
           className="hidden" 
           accept="image/*"
-          onChange={(e) => e.target.files?.[0] && onUpload(e.target.files[0])}
+          onChange={(e) => {
+              if (e.target.files?.[0]) {
+                  onUpload(e.target.files[0]);
+                  e.target.value = '';
+              }
+          }}
         />
       </div>
 

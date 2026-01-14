@@ -601,7 +601,9 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
                     <label className="text-indigo-300 text-[10px] uppercase font-bold block mb-1 font-display">Preset Config</label>
                     <SelectControl onChange={(e) => handleCurvePreset(e.target.value)} defaultValue="-1">
                         <option value="-1" disabled>Select Curve...</option>
-                        {CURVE_PRESETS.map((p, idx) => (<option key={idx} value={idx}>{p.name}</option>)}
+                        {CURVE_PRESETS.map((p, idx) => (
+                            <option key={idx} value={idx}>{p.name}</option>
+                        ))}
                     </SelectControl>
                  </div>
             )}

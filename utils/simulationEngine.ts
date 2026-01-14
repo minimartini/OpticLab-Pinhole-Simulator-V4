@@ -64,6 +64,10 @@ const FFT = {
     // 1D In-place Fast Fourier Transform
     transform: (out, inverse) => {
         const n = out.n;
+        // #region agent log
+        const isPowerOf2 = (n & (n - 1)) === 0 && n > 0;
+        if (!isPowerOf2) { self.postMessage({ type: 'debug', location: 'worker:FFT.transform', message: 'FFT size not power-of-2', data: { n, bits: Math.log2(n) }, hypothesisId: 'E' }); }
+        // #endregion
         const bits = Math.log2(n);
         // Bit-reversal Permutation
         for (let i = 0; i < n; i++) {
@@ -557,10 +561,16 @@ self.onmessage = async (e) => {
       report('Initializing Physics Engine...', 5);
       
       const outWidth = aperture.resolution || 1024;
+      // #region agent log
+      if (camera.sensorWidth === 0) { self.postMessage({ type: 'debug', location: 'worker:560', message: 'Division by zero risk', data: { sensorWidth: camera.sensorWidth }, hypothesisId: 'D' }); }
+      // #endregion
       const aspect = camera.sensorHeight / camera.sensorWidth;
       const outHeight = Math.round(outWidth * aspect);
       const sensorWidthMm = camera.sensorWidth;
       const sensorHeightMm = camera.sensorHeight;
+      // #region agent log
+      if (outWidth === 0) { self.postMessage({ type: 'debug', location: 'worker:564', message: 'Division by zero risk', data: { outWidth }, hypothesisId: 'D' }); }
+      // #endregion
       const sensorPixelPitch = sensorWidthMm / outWidth; // mm/px
       const f = camera.focalLength;
       

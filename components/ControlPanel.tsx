@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { CameraConfig, ApertureConfig, ApertureType, SimulationResult, CAMERA_PRESETS, MultiDotPattern, ProductionItem, EXIFData, WorkerMetadata } from '../types';
 import AperturePreview from './AperturePreview';
@@ -49,6 +48,8 @@ const CURVE_PRESETS: (Partial<ApertureConfig> & { name: string })[] = [
     { name: "Spiral: Galaxy (Multi-Arm)", type: ApertureType.SPIRAL, spiralArms: 3, spiralTurns: 2 },
     { name: "Ripple: Flower (5 Petal)", type: ApertureType.ROSETTE, rosettePetals: 5, slitHeight: 2.0 },
 ];
+
+const ISO_STEPS = [64, 100, 200, 400, 800, 1600, 3200, 6400, 12800, 25600, 51200];
 
 // --- UI COMPONENTS ---
 const PanelModule: React.FC<{ 
@@ -489,7 +490,7 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
 
   return (
     <>
-    <div className="w-full md:w-96 bg-noise bg-black border-r border-white/10 flex flex-col h-full overflow-y-auto text-sm backdrop-blur-sm shadow-2xl relative z-20">
+    <div className="w-full md:w-96 bg-noise bg-black border-t md:border-t-0 md:border-r border-white/10 flex flex-col h-[45vh] md:h-full overflow-y-auto text-sm backdrop-blur-sm shadow-2xl relative z-20">
       
       {/* Header */}
       <div className="p-5 border-b border-white/10 bg-black/40 backdrop-blur-md sticky top-0 z-30 flex justify-between items-center">
@@ -601,9 +602,7 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
                     <label className="text-indigo-300 text-[10px] uppercase font-bold block mb-1 font-display">Preset Config</label>
                     <SelectControl onChange={(e) => handleCurvePreset(e.target.value)} defaultValue="-1">
                         <option value="-1" disabled>Select Curve...</option>
-                        {CURVE_PRESETS.map((p, idx) => (
-                            <option key={idx} value={idx}>{p.name}</option>
-                        ))}
+                        {CURVE_PRESETS.map((p, idx) => (<option key={idx} value={idx}>{p.name}</option>)}
                     </SelectControl>
                  </div>
             )}
@@ -648,23 +647,44 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
             {isAdvanced && (
                 <div className="mt-4 pt-4 border-t border-white/5">
                     <div className="bg-black/20 rounded-lg p-3 border border-white/5 space-y-4">
-                        {/* No Header */}
-                        <div className="space-y-4">
-                            <HybridInput 
-                            label="ISO Sensitivity" 
-                            value={camera.iso} 
-                            min={100} max={25600} step={100} 
-                            onChange={(v) => updateCam('iso', v)}
-                            defaultValue={100}
-                            />
-                            <HybridInput 
+                        {/* ISO Stepped Slider */}
+                        <div>
+                            <div className="flex justify-between items-center mb-1">
+                                <label className="text-[10px] uppercase font-bold text-gray-500 tracking-wide font-display">ISO Sensitivity</label>
+                                <span className="text-xs font-mono font-bold text-science-400">{camera.iso}</span>
+                            </div>
+                            <div className="relative h-6 flex items-center">
+                                <input 
+                                    type="range" 
+                                    min={0} 
+                                    max={ISO_STEPS.length - 1} 
+                                    step={1}
+                                    value={ISO_STEPS.indexOf(camera.iso) === -1 ? 1 : ISO_STEPS.indexOf(camera.iso)}
+                                    onChange={(e) => updateCam('iso', ISO_STEPS[parseInt(e.target.value)])}
+                                    className="w-full h-1 bg-gray-800 rounded-full appearance-none cursor-pointer accent-science-500"
+                                />
+                                {/* Ticks */}
+                                <div className="absolute top-4 left-0 right-0 flex justify-between px-1 pointer-events-none">
+                                    {ISO_STEPS.filter((_, i) => i % 2 === 0).map((step) => (
+                                        <div key={step} className="w-[1px] h-1 bg-gray-600"></div>
+                                    ))}
+                                </div>
+                            </div>
+                            <div className="flex justify-between text-[8px] text-gray-600 font-mono mt-1 px-0.5">
+                                <span>64</span>
+                                <span>400</span>
+                                <span>3200</span>
+                                <span>25600</span>
+                            </div>
+                        </div>
+
+                        <HybridInput 
                             label="Exposure Comp (EV)" 
                             value={exposure} 
                             min={-3.0} max={3.0} step={0.1} 
                             onChange={setExposure} 
                             defaultValue={0}
-                            />
-                        </div>
+                        />
                     </div>
                 </div>
             )}

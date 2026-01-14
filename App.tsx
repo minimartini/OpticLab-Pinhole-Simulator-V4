@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import exifr from 'exifr';
 import ControlPanel from './components/ControlPanel';
@@ -40,7 +39,8 @@ const App: React.FC = () => {
       fovV: 0,
       focalLength35mm: 0,
       maxFootprint: 0,
-      isDiffractionLimited: false
+      isDiffractionLimited: false,
+      effectiveDiameter: 0
   });
 
   const [simMeta, setSimMeta] = useState<WorkerMetadata | null>(null);
@@ -145,9 +145,6 @@ const App: React.FC = () => {
   };
 
   const onSimulate = async () => {
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/bd3f41ad-e6bf-43db-a620-ebff8e5139e0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:147',message:'onSimulate entry',data:{isProcessing},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
       if (isProcessing) return;
       
       let sourceData = originalImage;
@@ -163,18 +160,11 @@ const App: React.FC = () => {
       setSimMeta(null);
 
       if (!workerRef.current) {
-          // #region agent log
-          fetch('http://127.0.0.1:7242/ingest/bd3f41ad-e6bf-43db-a620-ebff8e5139e0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:162',message:'Creating new worker',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-          // #endregion
           const blob = new Blob([WORKER_SOURCE], { type: 'application/javascript' });
           workerRef.current = new Worker(URL.createObjectURL(blob));
       }
 
       const worker = workerRef.current;
-      
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/bd3f41ad-e6bf-43db-a620-ebff8e5139e0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:167',message:'Before setting handlers',data:{hasOnMessage:!!worker.onmessage,hasOnError:!!worker.onerror},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
       
       let maskBitmap: ImageBitmap | undefined;
       if (aperture.type === ApertureType.CUSTOM && aperture.maskImage) {
@@ -182,44 +172,22 @@ const App: React.FC = () => {
                const resp = await fetch(aperture.maskImage);
                const blob = await resp.blob();
                maskBitmap = await createImageBitmap(blob);
-               // #region agent log
-               fetch('http://127.0.0.1:7242/ingest/bd3f41ad-e6bf-43db-a620-ebff8e5139e0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:174',message:'Created maskBitmap',data:{width:maskBitmap.width,height:maskBitmap.height},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-               // #endregion
            } catch (e) {
                console.error("Failed to load mask", e);
            }
       }
 
       worker.onmessage = (e) => {
-          // #region agent log
-          fetch('http://127.0.0.1:7242/ingest/bd3f41ad-e6bf-43db-a620-ebff8e5139e0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:180',message:'Worker message received',data:{type:e.data.type,hasSuccess:e.data.success,hasProcessed:!!e.data.processed},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-          // #endregion
           if (e.data.type === 'progress') {
               setProgress(e.data);
           } else if (e.data.success) {
               const bmp = e.data.processed as ImageBitmap;
-              // #region agent log
-              fetch('http://127.0.0.1:7242/ingest/bd3f41ad-e6bf-43db-a620-ebff8e5139e0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:184',message:'Processing ImageBitmap',data:{width:bmp.width,height:bmp.height},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-              // #endregion
               const canvas = document.createElement('canvas');
               canvas.width = bmp.width;
               canvas.height = bmp.height;
               const ctx = canvas.getContext('2d');
-              // #region agent log
-              fetch('http://127.0.0.1:7242/ingest/bd3f41ad-e6bf-43db-a620-ebff8e5139e0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:189',message:'Canvas context check',data:{ctxIsNull:ctx===null},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
-              // #endregion
               ctx?.drawImage(bmp, 0, 0);
               setProcessedImage(ctx?.getImageData(0,0, bmp.width, bmp.height) || null);
-              try {
-                  bmp.close();
-                  // #region agent log
-                  fetch('http://127.0.0.1:7242/ingest/bd3f41ad-e6bf-43db-a620-ebff8e5139e0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:190',message:'ImageBitmap closed',data:{width:bmp.width,height:bmp.height},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-                  // #endregion
-              } catch {
-                  // #region agent log
-                  fetch('http://127.0.0.1:7242/ingest/bd3f41ad-e6bf-43db-a620-ebff8e5139e0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:190',message:'ImageBitmap close failed',data:{width:bmp.width,height:bmp.height},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-                  // #endregion
-              }
               
               if (e.data.metadata) {
                   setSimMeta(e.data.metadata);
@@ -235,9 +203,6 @@ const App: React.FC = () => {
       };
       
       worker.onerror = (e) => {
-          // #region agent log
-          fetch('http://127.0.0.1:7242/ingest/bd3f41ad-e6bf-43db-a620-ebff8e5139e0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:205',message:'Worker error handler',data:{message:e.message},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-          // #endregion
           setError("Worker Error: " + e.message);
           setIsProcessing(false);
       };
@@ -275,15 +240,7 @@ const App: React.FC = () => {
             isProcessing={isProcessing}
             onSimulate={onSimulate}
             onCancel={() => {
-                // #region agent log
-                fetch('http://127.0.0.1:7242/ingest/bd3f41ad-e6bf-43db-a620-ebff8e5139e0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:242',message:'Cancel called',data:{hasWorker:!!workerRef.current,hasOnMessage:workerRef.current?!!workerRef.current.onmessage:false},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-                // #endregion
-                if(workerRef.current) {
-                    // #region agent log
-                    fetch('http://127.0.0.1:7242/ingest/bd3f41ad-e6bf-43db-a620-ebff8e5139e0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:243',message:'Terminating worker WITHOUT removing handlers',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-                    // #endregion
-                    workerRef.current.terminate();
-                }
+                if(workerRef.current) workerRef.current.terminate();
                 workerRef.current = null;
                 setIsProcessing(false);
                 setProgress(null);

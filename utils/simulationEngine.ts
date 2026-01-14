@@ -44,14 +44,91 @@ const PHYSICS_CONSTANTS = {
   SPECTRAL_COLORS: [
       [1.0, 0.0, 0.0], // Red
       [1.0, 0.6, 0.0], // Orange/Amber
-      [0.0, 1.0, 0.0], // Green (Updated for clarity)
+      [0.0, 1.0, 0.0], // Green
       [0.0, 0.8, 1.0], // Cyan
       [0.2, 0.0, 1.0]  // Blue/Violet
   ]
 };
 
+// --- HELPER FUNCTIONS (Post-Processing) ---
+
+const resizeImageData = (input, targetWidth) => {
+    const scale = targetWidth / input.width;
+    const targetHeight = Math.round(input.height * scale);
+    const canvas = new OffscreenCanvas(targetWidth, targetHeight);
+    const ctx = canvas.getContext('2d');
+    
+    const srcCanvas = new OffscreenCanvas(input.width, input.height);
+    const srcCtx = srcCanvas.getContext('2d');
+    srcCtx.putImageData(input, 0, 0);
+    
+    ctx.drawImage(srcCanvas, 0, 0, targetWidth, targetHeight);
+    return ctx.getImageData(0, 0, targetWidth, targetHeight);
+};
+
+const applyVignetting = (data, focalLengthMm, sensorWidthMm) => {
+    const { width, height, data: pixels } = data;
+    const pixelsPerMm = width / sensorWidthMm;
+    const centerX = width / 2;
+    const centerY = height / 2;
+    const f2 = focalLengthMm * focalLengthMm;
+
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const dx = (x - centerX) / pixelsPerMm;
+            const dy = (y - centerY) / pixelsPerMm;
+            const r2 = dx * dx + dy * dy;
+            
+            // Cos^4 Law for natural vignetting
+            const cosTheta = focalLengthMm / Math.sqrt(f2 + r2);
+            const cos4 = cosTheta * cosTheta * cosTheta * cosTheta;
+            
+            const idx = (y * width + x) * 4;
+            pixels[idx] *= cos4;
+            pixels[idx + 1] *= cos4;
+            pixels[idx + 2] *= cos4;
+        }
+    }
+};
+
+const applySensorNoise = (data, iso) => {
+    const pixels = data.data;
+    const isoFactor = Math.max(0, iso - 100);
+    
+    // Noise model parameters
+    const readNoiseStdDev = (isoFactor / 3200) * 2.0; 
+    const shotNoiseFactor = (isoFactor / 1600) * 1.5; 
+
+    // Gaussian generator (Box-Muller transform)
+    const randn_bm = () => {
+        let u = 0, v = 0;
+        while(u === 0) u = Math.random();
+        while(v === 0) v = Math.random();
+        return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+    };
+
+    for (let i = 0; i < pixels.length; i += 4) {
+        if (pixels[i+3] === 0) continue; 
+
+        // Monochromatic Noise Calculation
+        // We generate a single random value for the pixel (Luminance noise)
+        // instead of separate R,G,B values (which creates Color noise).
+        const n = randn_bm();
+
+        // Calculate Pixel Luminance (approximate)
+        const luma = pixels[i] * 0.299 + pixels[i+1] * 0.587 + pixels[i+2] * 0.114;
+
+        // Signal Dependent Noise (Shot Noise scales with sqrt of signal)
+        const noiseDelta = n * (readNoiseStdDev + Math.sqrt(luma) * shotNoiseFactor);
+
+        // Apply same delta to all channels to preserve Hue
+        pixels[i]   = Math.min(255, Math.max(0, pixels[i]   + noiseDelta));
+        pixels[i+1] = Math.min(255, Math.max(0, pixels[i+1] + noiseDelta));
+        pixels[i+2] = Math.min(255, Math.max(0, pixels[i+2] + noiseDelta));
+    }
+};
+
 // --- FFT LIBRARY (Cooley-Tukey Radix-2) ---
-// Simple implementation suitable for Web Workers where external libraries are harder to bundle dynamically.
 class ComplexArray {
     constructor(n) {
         this.n = n;
@@ -61,15 +138,9 @@ class ComplexArray {
 }
 
 const FFT = {
-    // 1D In-place Fast Fourier Transform
     transform: (out, inverse) => {
         const n = out.n;
-        // #region agent log
-        const isPowerOf2 = (n & (n - 1)) === 0 && n > 0;
-        if (!isPowerOf2) { self.postMessage({ type: 'debug', location: 'worker:FFT.transform', message: 'FFT size not power-of-2', data: { n, bits: Math.log2(n) }, hypothesisId: 'E' }); }
-        // #endregion
         const bits = Math.log2(n);
-        // Bit-reversal Permutation
         for (let i = 0; i < n; i++) {
             let rev = 0, val = i;
             for (let j = 0; j < bits; j++) { rev = (rev << 1) | (val & 1); val >>= 1; }
@@ -79,7 +150,6 @@ const FFT = {
                 out.real[rev] = tr; out.imag[rev] = ti;
             }
         }
-        // Butterfly Operations
         for (let s = 1; s <= bits; s++) {
             const m = 1 << s, m2 = m >> 1;
             const theta = (inverse ? -2 : 2) * Math.PI / m;
@@ -98,14 +168,11 @@ const FFT = {
                 }
             }
         }
-        // Normalization for Inverse FFT
         if (inverse) {
             for(let i=0; i<n; i++) { out.real[i] /= n; out.imag[i] /= n; }
         }
     },
-    // 2D FFT (Row-Column decomposition)
     fft2D: (cArr, w, h, inverse) => {
-        // Transform Rows
         for(let y=0; y<h; y++) {
             const row = new ComplexArray(w);
             const off = y*w;
@@ -113,7 +180,6 @@ const FFT = {
             FFT.transform(row, inverse);
             for(let x=0; x<w; x++) { cArr.real[off+x] = row.real[x]; cArr.imag[off+x] = row.imag[x]; }
         }
-        // Transform Columns
         for(let x=0; x<w; x++) {
             const col = new ComplexArray(h);
             for(let y=0; y<h; y++) { col.real[y] = cArr.real[y*w+x]; col.imag[y] = cArr.imag[y*w+x]; }
@@ -121,7 +187,6 @@ const FFT = {
             for(let y=0; y<h; y++) { cArr.real[y*w+x] = col.real[y]; cArr.imag[y*w+x] = col.imag[y]; }
         }
     },
-    // Shift zero-frequency component to center of spectrum
     fftShift: (cArr, w, h) => {
         const halfW = w >>> 1;
         const halfH = h >>> 1;
@@ -140,7 +205,6 @@ const FFT = {
         cArr.real.set(tempR);
         cArr.imag.set(tempI);
     },
-    // Point-wise complex multiplication (Convolution in freq domain)
     multiply: (a, b) => {
         const n = a.n;
         const res = new ComplexArray(n);
@@ -152,8 +216,6 @@ const FFT = {
     }
 };
 
-// ... [Draw Aperture Function - Same as Physics.ts but embedded for Worker] ...
-// (Omitting full copy here for brevity, assume it mirrors the previous logic)
 const drawAperture = (ctx, scale, aperture, maskBitmap, focalLength) => {
   ctx.save();
   ctx.rotate((aperture.rotation || 0) * Math.PI / 180);
@@ -251,19 +313,11 @@ const drawAperture = (ctx, scale, aperture, maskBitmap, focalLength) => {
          const height = (aperture.slitHeight || 2.0) * scale;
          const segments = Math.max(1, aperture.count || 5);
          const thickness = (aperture.slitWidth || 0.2) * scale;
-         
-         ctx.lineCap = 'round';
-         ctx.lineJoin = 'miter';
-         ctx.lineWidth = thickness;
-         ctx.strokeStyle = '#fff';
-         
+         ctx.lineCap = 'round'; ctx.lineJoin = 'miter'; ctx.lineWidth = thickness; ctx.strokeStyle = '#fff';
          ctx.beginPath();
-         
          const stepX = width / segments;
          const startX = -width / 2;
-         
-         ctx.moveTo(startX, height/2); // Start bottom-left relative
-         
+         ctx.moveTo(startX, height/2);
          for(let i=1; i<=segments; i++) {
              const x = startX + i * stepX;
              const y = (i % 2 === 0) ? height/2 : -height/2;
@@ -276,11 +330,7 @@ const drawAperture = (ctx, scale, aperture, maskBitmap, focalLength) => {
          const slitW = (aperture.slitWidth || 0.2) * scale;
          const slitL = (aperture.diameter || 5) * scale;
          const dist = (aperture.spread || 1.0) * scale;
-         
-         ctx.beginPath();
-         ctx.arc(-dist/2, 0, dotR, 0, Math.PI*2);
-         ctx.fill();
-         
+         ctx.beginPath(); ctx.arc(-dist/2, 0, dotR, 0, Math.PI*2); ctx.fill();
          ctx.fillRect(dist/2 - slitW/2, -slitL/2, slitW, slitL);
   }
   else if (aperture.type === ApertureType.LISSAJOUS) {
@@ -560,37 +610,35 @@ self.onmessage = async (e) => {
   try {
       report('Initializing Physics Engine...', 5);
       
+      let simInput = sourceImageData;
+      
       const outWidth = aperture.resolution || 1024;
-      // #region agent log
-      if (camera.sensorWidth === 0) { self.postMessage({ type: 'debug', location: 'worker:560', message: 'Division by zero risk', data: { sensorWidth: camera.sensorWidth }, hypothesisId: 'D' }); }
-      // #endregion
       const aspect = camera.sensorHeight / camera.sensorWidth;
       const outHeight = Math.round(outWidth * aspect);
       const sensorWidthMm = camera.sensorWidth;
       const sensorHeightMm = camera.sensorHeight;
-      // #region agent log
-      if (outWidth === 0) { self.postMessage({ type: 'debug', location: 'worker:564', message: 'Division by zero risk', data: { outWidth }, hypothesisId: 'D' }); }
-      // #endregion
       const sensorPixelPitch = sensorWidthMm / outWidth; // mm/px
       const f = camera.focalLength;
       
+      // Pre-scale input image to simulation resolution if needed
+      // This ensures convolution happens at target res, not input res
+      if (simInput && (simInput.width !== outWidth || simInput.height !== outHeight)) {
+          simInput = resizeImageData(simInput, outWidth);
+      }
+
       let wavelengths = [];
       let colors = [];
       let usedMethod = 'GEOMETRIC';
       
-      // Determine simulation mode (Monochromatic vs Polychromatic)
       if (aperture.useChromaticAberration || aperture.engine === 'WAVE') {
-          // Use 5 spectral bands for accurate color reconstruction
           wavelengths = PHYSICS_CONSTANTS.SPECTRAL_WAVELENGTHS.map(w => w * 1e-6); // mm
           colors = PHYSICS_CONSTANTS.SPECTRAL_COLORS;
       } else {
-          // Fast mono mode
           const centerWl = (camera.wavelength || 550) * 1e-6;
           wavelengths = [centerWl, centerWl, centerWl];
           colors = [[1,0,0], [0,1,0], [0,0,1]];
       }
       
-      // Accumulation buffer for the Point Spread Function (PSF)
       const kernelBuffer = new Float32Array(outWidth * outHeight * 3);
       
       for(let idx = 0; idx < wavelengths.length; idx++) {
@@ -599,15 +647,12 @@ self.onmessage = async (e) => {
           
           if (aperture.engine === 'GEOMETRIC') {
              usedMethod = 'GEOMETRIC';
-             // --- GEOMETRIC MODE ---
-             // Faster, ignores interference. Great for previewing shapes.
              const gCanvas = new OffscreenCanvas(outWidth, outHeight);
              const gCtx = gCanvas.getContext('2d');
              gCtx.fillStyle = '#000'; gCtx.fillRect(0,0,outWidth,outHeight);
              gCtx.translate(outWidth/2, outHeight/2);
              const pxPerMm = 1.0 / sensorPixelPitch;
              
-             // Apply simple Gaussian blur to approximate Airy Disk size (without rings)
              if (diffractionBlur > 0) {
                  const blurPx = diffractionBlur * pxPerMm * 0.5;
                  if (blurPx > 0.1) gCtx.filter = \`blur(\${blurPx}px)\`;
@@ -616,7 +661,6 @@ self.onmessage = async (e) => {
              drawAperture(gCtx, pxPerMm, aperture, maskBitmap, f);
              
              const gData = gCtx.getImageData(0,0,outWidth,outHeight).data;
-             // Accumulate into kernel buffer
              for(let i=0; i<outWidth*outHeight; i++) {
                  const val = gData[i*4+1] / 255.0; 
                  if (val > 0) {
@@ -627,31 +671,20 @@ self.onmessage = async (e) => {
              }
 
           } else {
-             // --- WAVE OPTICS ---
-             
+             // WAVE OPTICS (ASM / Fresnel) logic...
              const apSize = Math.max(aperture.diameter, aperture.spread || 0, aperture.slitWidth || 0);
              const sensorMax = Math.max(sensorWidthMm, sensorHeightMm);
-             
-             // Determine simulation resolution N (Power of 2 for FFT efficiency)
-             // Must be high enough to resolve aperture features AND sensor pixels
              const requiredN = Math.max(2048, Math.pow(2, Math.ceil(Math.log2(outWidth * 1.5))));
              const maxN = Math.min(requiredN, 4096); 
-             
-             // Check Propogation Regime (Fresnel Number / Sampling)
              const minL1 = Math.max(apSize * 1.5, 0.5); 
              const L2_at_minL1 = (maxN * lambdaMm * f) / minL1;
              
-             // Switch logic: If the projected Fresnel pattern is too small for the sensor, use Angular Spectrum Method.
              const useASM = L2_at_minL1 < (sensorMax * 0.5);
              usedMethod = useASM ? 'ASM' : 'FRESNEL';
-             
-             const N = useASM ? Math.min(requiredN, 2048) : maxN; // ASM is heavy, limit
+             const N = useASM ? Math.min(requiredN, 2048) : maxN;
              const simulationL = Math.max(apSize, sensorMax) * 1.5; 
              
              if (useASM) {
-                 // --- ANGULAR SPECTRUM METHOD (ASM) ---
-                 // Propagates the wave field plane-to-plane preserving scale.
-                 // Better for Near Field or large apertures relative to distance.
                  const apCanvas = new OffscreenCanvas(N, N);
                  const apCtx = apCanvas.getContext('2d');
                  apCtx.fillStyle = '#000'; apCtx.fillRect(0,0,N,N);
@@ -666,12 +699,10 @@ self.onmessage = async (e) => {
                      field.imag[i] = 0;
                  }
                  
-                 // 1. FFT
                  FFT.fftShift(field, N, N);
                  FFT.fft2D(field, N, N, false);
                  FFT.fftShift(field, N, N);
                  
-                 // 2. Transfer Function (Free space propagator)
                  const df = 1.0 / simulationL; 
                  const z = f;
                  const k = 1.0 / lambdaMm;
@@ -685,17 +716,13 @@ self.onmessage = async (e) => {
                          const fx = (x - halfN) * df;
                          const fx2 = fx*fx;
                          const idx = y*N + x;
-                         
-                         // Band-limiting to avoid aliasing (Evanescent waves)
                          if (fx2 + fy2 < k2) {
                              const root = Math.sqrt(k2 - fx2 - fy2);
                              const phase = 2 * Math.PI * z * root;
                              const cosP = Math.cos(phase);
                              const sinP = Math.sin(phase);
-                             
                              const re = field.real[idx];
                              const im = field.imag[idx];
-                             
                              field.real[idx] = re*cosP - im*sinP;
                              field.imag[idx] = re*sinP + im*cosP;
                          } else {
@@ -705,12 +732,10 @@ self.onmessage = async (e) => {
                      }
                  }
                  
-                 // 3. Inverse FFT
                  FFT.fftShift(field, N, N);
                  FFT.fft2D(field, N, N, true);
                  FFT.fftShift(field, N, N);
                  
-                 // Extract Intensity (Magnitude Squared)
                  const intensity = new Float32Array(N*N);
                  let totalE = 0;
                  for(let i=0; i<N*N; i++) {
@@ -720,7 +745,6 @@ self.onmessage = async (e) => {
                  }
                  if(totalE > 0) for(let i=0; i<N*N; i++) intensity[i] /= totalE;
                  
-                 // Resample to Output Resolution
                  const center = N/2;
                  const outCenterX = outWidth/2;
                  const outCenterY = outHeight/2;
@@ -743,14 +767,10 @@ self.onmessage = async (e) => {
                  }
 
              } else {
-                 // --- SCALED FRESNEL TRANSFORM (Far Field) ---
-                 // Standard for pinholes. Allows simulating large propagation distances efficiently
-                 // by decoupling input and output sampling rates.
-                 
-                 // Calculate sampling window L1 at aperture plane
+                 // FRESNEL
                  const targetL1 = (N * lambdaMm * f) / (sensorMax * 1.05);
                  const L1 = Math.max(minL1, targetL1);
-                 const L2 = (N * lambdaMm * f) / L1; // Resulting window size at sensor plane
+                 const L2 = (N * lambdaMm * f) / L1;
                  
                  const apCanvas = new OffscreenCanvas(N, N);
                  const apCtx = apCanvas.getContext('2d');
@@ -760,7 +780,6 @@ self.onmessage = async (e) => {
                  drawAperture(apCtx, pxPerMm_L1, aperture, maskBitmap, f);
                  const apData = apCtx.getImageData(0,0,N,N).data;
                  
-                 // Prepare Complex Field with Quadratic Phase Factor (Chirp)
                  const field = new ComplexArray(N*N);
                  const k_chirp = Math.PI / (lambdaMm * f);
                  const dx1 = L1 / N;
@@ -782,7 +801,6 @@ self.onmessage = async (e) => {
                      }
                  }
                  
-                 // Fresnel Propogation is essentially a Fourier Transform of the chirped aperture
                  FFT.fftShift(field, N, N);
                  FFT.fft2D(field, N, N, false);
                  FFT.fftShift(field, N, N);
@@ -796,7 +814,6 @@ self.onmessage = async (e) => {
                  }
                  if(totalE > 0) for(let i=0; i<N*N; i++) intensity[i] /= totalE;
                  
-                 // Bilinear Interpolation to map result to sensor pixels
                  const center = N/2;
                  const outCenterX = outWidth/2;
                  const outCenterY = outHeight/2;
@@ -810,7 +827,6 @@ self.onmessage = async (e) => {
                          if (gx >= 0 && gx < N-1 && gy >= 0 && gy < N-1) {
                               const ix = Math.floor(gx); const iy = Math.floor(gy);
                               const fx = gx - ix; const fy = gy - iy;
-                              // Bilinear
                               const v00 = intensity[iy*N + ix];
                               const v10 = intensity[iy*N + ix+1];
                               const v01 = intensity[(iy+1)*N + ix];
@@ -828,7 +844,6 @@ self.onmessage = async (e) => {
           }
       }
       
-      // --- NORMALIZATION ---
       const outputBuffer = new Float32Array(outWidth * outHeight * 3);
       const len = outWidth * outHeight;
       
@@ -848,33 +863,21 @@ self.onmessage = async (e) => {
           kernelBuffer[i*3+2] *= nB;
       }
 
-      // 1.2x Base Gain Boost + Exposure Compensation (EV)
       let finalGain = 1.2 * Math.pow(2, exposure);
 
       if (aperture.centerDot) {
-           // POINT SOURCE MODE: Visualizing the PSF itself
            const displayGain = sourceIntensity * 50000.0; 
            for(let i=0; i<len*3; i++) {
                outputBuffer[i] = kernelBuffer[i] * displayGain;
            }
       } else {
-          // IMAGE MODE: Convolution (FFT based)
-          if (sourceImageData && sourceImageData.width > 1) {
+          if (simInput && simInput.width > 1) {
                report('Convolving Scene...', 70);
                const srcCanvas = new OffscreenCanvas(outWidth, outHeight);
                const srcCtx = srcCanvas.getContext('2d');
-               
-               const sW = sourceImageData.width; const sH = sourceImageData.height;
-               // Scale image to cover sensor
-               const scale = Math.max(outWidth / sW, outHeight / sH);
-               const dW = sW * scale; const dH = sH * scale;
-               const dX = (outWidth - dW)/2; const dY = (outHeight - dH)/2;
-               
-               const bmp = await createImageBitmap(sourceImageData);
-               srcCtx.drawImage(bmp, dX, dY, dW, dH);
+               srcCtx.putImageData(simInput, 0, 0); // Already resized
                const srcData = srcCtx.getImageData(0,0,outWidth,outHeight).data;
                
-               // Use next power of 2 for convolution padding to avoid circular wrap-around artifacts
                const fftW = Math.pow(2, Math.ceil(Math.log2(outWidth)));
                const fftH = Math.pow(2, Math.ceil(Math.log2(outHeight)));
                const fftLen = fftW * fftH;
@@ -886,24 +889,19 @@ self.onmessage = async (e) => {
                    const imgC = new ComplexArray(fftLen);
                    const kerC = new ComplexArray(fftLen);
                    
-                   // Fill Image Buffer (with Clamp-to-Edge padding)
                    for(let fy=0; fy<fftH; fy++) {
                        let y = fy - imgOffY;
                        if (y < 0) y = 0; 
                        if (y >= outHeight) y = outHeight - 1;
-                       
                        for(let fx=0; fx<fftW; fx++) {
                            let x = fx - imgOffX;
                            if (x < 0) x = 0;
                            if (x >= outWidth) x = outWidth - 1;
-                           
                            const srcIdx = (y*outWidth + x) * 4;
-                           // Convert to Linear Light (Gamma 2.2) for physical accuracy
                            imgC.real[fy*fftW + fx] = Math.pow(srcData[srcIdx+c] / 255.0, 2.2); 
                        }
                    }
                    
-                   // Fill Kernel Buffer
                    for(let y=0; y<outHeight; y++) {
                        for(let x=0; x<outWidth; x++) {
                            const fi = (y + imgOffY)*fftW + (x + imgOffX);
@@ -911,14 +909,12 @@ self.onmessage = async (e) => {
                        }
                    }
 
-                   // Convolution via FFT Multiplication
-                   FFT.fftShift(kerC, fftW, fftH); // Shift kernel center to (0,0) freq
+                   FFT.fftShift(kerC, fftW, fftH);
                    FFT.fft2D(imgC, fftW, fftH, false);
                    FFT.fft2D(kerC, fftW, fftH, false);
                    const resC = FFT.multiply(imgC, kerC);
-                   FFT.fft2D(resC, fftW, fftH, true); // Inverse
+                   FFT.fft2D(resC, fftW, fftH, true);
                    
-                   // Extract Result (Center Crop)
                    for(let y=0; y<outHeight; y++) {
                        for(let x=0; x<outWidth; x++) {
                            const val = resC.real[(y + imgOffY)*fftW + (x + imgOffX)];
@@ -936,14 +932,25 @@ self.onmessage = async (e) => {
           let r = outputBuffer[i*3];
           let g = outputBuffer[i*3+1];
           let b = outputBuffer[i*3+2];
-          // Apply Gamma Correction (2.2) for display
+          
           u8[i*4] = Math.min(255, Math.pow(r, 1/2.2) * 255);
           u8[i*4+1] = Math.min(255, Math.pow(g, 1/2.2) * 255);
           u8[i*4+2] = Math.min(255, Math.pow(b, 1/2.2) * 255);
           u8[i*4+3] = 255;
       }
       
-      const resultBitmap = await createImageBitmap(new ImageData(u8, outWidth, outHeight));
+      const finalImageData = new ImageData(u8, outWidth, outHeight);
+
+      // --- APPLY POST PROCESSING (Noise & Vignette) ---
+      if (aperture.useVignetting) {
+          applyVignetting(finalImageData, camera.focalLength, camera.sensorWidth);
+      }
+
+      if (aperture.addSensorNoise && camera.iso > 100) {
+          applySensorNoise(finalImageData, camera.iso);
+      }
+      
+      const resultBitmap = await createImageBitmap(finalImageData);
       self.postMessage({ success: true, processed: resultBitmap, metadata: { method: usedMethod } }, [resultBitmap]);
 
   } catch (err) {
